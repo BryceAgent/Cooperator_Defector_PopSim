@@ -1,0 +1,294 @@
+# simulation to represent interaction of communities composed of
+# cooperators and defectors who must harvest resources to survive
+# and reproduce
+
+import argparse
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
+import random
+
+
+# DEFE is defector
+# defectors "fight" for resources
+# if they interact with a cooperator they will take the cooperator's resources (which kills the cooperator)
+# if they interact with another defector one or both will be eliminated
+# if a defector survives they reproduce if resources are sufficient
+
+# COOP is cooperator
+# cooperators will split resources equally between them
+# if a cooperator survives they reproduce if resources are sufficent
+
+# RES is resources
+# each RES space spawns a random amount of resources
+# each unit (COOP or DEFE) requires SURV resources to survive
+# each unit requirse REPR resources to reproduce
+
+# units are reproduced in an adjacent RES space
+# populations of adjacent units will harvest all resources from all adjacent RES spaces
+# a population of units is defined by contiguity
+# if they are continuously adjacent they form one local population
+
+SURV = 7
+REPR = 20
+DEFE = 2
+COOP = 1
+RES = 0
+vals = [DEFE, COOP, RES]
+
+def randomGrid(N):
+    # create grid
+    return np.random.choice(vals, N*N, p=[.01, .24, .75]).reshape(N,N)
+
+
+def countGamedist(grid):
+    # give count values of DEFs and COOPs
+
+    defe_count = 0
+    coop_count = 0
+
+    N = len(grid)
+
+    for i in range(N):
+        for j in range(N):
+            if grid[i,j] == DEFE:
+                defe_count += 1
+            elif grid[i,j] == COOP:
+                coop_count += 1
+
+    return int(defe_count), int(coop_count)
+
+def localPop(grid, N):
+    # finds coordinates of individuals and communities and returns them as a list
+
+    local_pops = []
+
+    visit = set()
+    rows, cols = len(grid), len(grid[0])
+
+    def dfs(r,c,ind_pop):
+        if (r not in range(rows) or
+            c not in range(cols) or
+            grid[r][c] == RES or
+            (r,c) in visit):
+            return ind_pop
+
+        visit.add((r,c))
+        ind_pop.append([r,c])
+        directions = [[0,1 % N],[0,-1 % N],[1 % N,0],[-1 % N,0]]
+        for dr, dc in directions:
+            dfs(r+dr, c+dc, ind_pop)
+
+
+    for r in range(rows):
+        for c in range(cols):
+
+            if (grid[r][c] == DEFE) or (grid[r][c] == COOP) and (r,c) not in visit:
+                ind_pop = []
+                dfs(r,c,ind_pop)
+                local_pops.append(ind_pop)
+
+    local_pops = [x for x in local_pops if x != []]
+
+    return local_pops
+
+def res_finder(local_pops, grid, N):
+    # returns coordinates of resources which surround communities of individual units
+    res_rings = []
+
+    # run through each individual of each pop and add RES spaces to list
+    # RES q will be at parity with local_pops q
+
+    visit = set()
+    rows, cols = len(grid), len(grid[0])
+    directions = [[0, 1], [0, -1], [1, 0], [-1, 0]]
+
+    for pop in local_pops:
+        ring = []
+        for ind in pop:
+            r = ind[0]
+            c = ind[1]
+            for dr, dc in directions:
+                tuple_rc = tuple(((r+dr)%N,(c+dc)%N))
+
+                if grid[(r + dr) % N][(c + dc) % N] == RES and tuple_rc not in visit:
+                    visit.add(((r+dr)%N,(c+dc)%N))
+                    ring.append([(r+dr)%N,(c+dc)%N])
+        res_rings.append(ring)
+
+    return res_rings
+
+def update(frameNum, img, grid, N):
+    # calculates and returns individual units interacting with
+    # members of their own local population to harvest resources
+    # then calculates survival and reproduction
+    # units are reproduced into the res_ring
+
+    newGrid = grid.copy()
+
+    local_pops = localPop(grid, N)
+    res_ring = res_finder(local_pops, grid, N)
+
+    # get random unit from list
+    def pop_random(lst):
+        idx = random.randrange(0, len(lst))
+        return lst.pop(idx), idx
+
+
+    for p in range(len(local_pops)):
+        # calculate resources available to each population
+        # harvest resources and distribute them randomly to units
+        # units can only harvest resources from adjacent RES spaces = res_ring
+        total_res = 0
+        for space in res_ring[p]:
+            total_res += random.randint(0, 100)
+
+        # randomly distribute resources among units in local population
+        pop_no = len(local_pops[p])
+        ind_res_possession = []
+        rand_dist = np.random.dirichlet(np.ones(pop_no),size=1)
+        for i in range(pop_no):
+            ind_res_possession.append(round((rand_dist[0][i] * total_res)))
+
+
+        # randomly associate units in pairs
+        # COOP-COOP pairs get 10% bonus
+        # DEFE-COOP pairs get 10% tax (DEFE takes all resources)
+        # DEFE-DEFE pairs get 20% (if one survives they take all resources)
+        # eliminated units become RES spaces
+        for ind in local_pops[p]:
+            # calculate survival/reproduction for individual unit
+            if len(local_pops[p]) % 2 == 1:
+                a, idx = pop_random(local_pops[p])
+                if ind_res_possession[idx] < SURV:
+                    newGrid[a[0]][a[1]] = RES
+                elif ind_res_possession[idx] > REPR:
+                    if len(res_ring[p]) > 0:
+                        res_space, res_idx = pop_random(res_ring[p])
+                        newGrid[res_space[0]][res_space[1]] = newGrid[a[0]][a[1]]
+
+            else:
+                # calculate survival/reproduction for pairs of units
+                a, idx_a = pop_random(local_pops[p])
+                b, idx_b = pop_random(local_pops[p])
+
+                # if COOP-COOP pair
+                if newGrid[a[0]][a[1]] == COOP and newGrid[b[0]][b[1]] == COOP:
+                    ind_res_possession[idx_a] = round(ind_res_possession[idx_a] * 1.25)
+                    ind_res_possession[idx_b] = round(ind_res_possession[idx_b] * 1.25)
+
+                    if ind_res_possession[idx_a] < SURV:
+                        newGrid[a[0]][a[1]] = RES
+                    elif ind_res_possession[idx_a] > REPR:
+                        if len(res_ring[p]) > 0:
+                            res_space, res_idx = pop_random(res_ring[p])
+                            newGrid[res_space[0]][res_space[1]] = COOP
+                    if ind_res_possession[idx_b] < SURV:
+                        newGrid[b[0]][b[1]] = RES
+                    elif ind_res_possession[idx_b] > REPR:
+                        if len(res_ring[p]) > 0:
+                            res_space, res_idx = pop_random(res_ring[p])
+                            newGrid[res_space[0]][res_space[1]] = COOP
+
+                # if COOP-DEFE pair
+                elif newGrid[a[0]][a[1]] == COOP and newGrid[b[0]][b[1]] == DEFE:
+                    ind_res_possession[idx_b] = round((ind_res_possession[idx_b] + ind_res_possession[idx_a]) * 0.9)
+                    newGrid[a[0]][a[1]] = RES
+                    if ind_res_possession[idx_b] < SURV:
+                        newGrid[b[0]][b[1]] = RES
+                    elif ind_res_possession[idx_b] > REPR:
+                        newGrid[a[0]][a[1]] = DEFE
+
+                # if DEFE-COOP pair
+                elif newGrid[a[0]][a[1]] == DEFE and newGrid[b[0]][b[1]] == COOP:
+                    ind_res_possession[idx_a] = round((ind_res_possession[idx_a] + ind_res_possession[idx_b]) * 0.9)
+                    newGrid[b[0]][b[1]] = RES
+                    if ind_res_possession[idx_a] < SURV:
+                        newGrid[a[0]][a[1]] = RES
+                    elif ind_res_possession[idx_a] > REPR:
+                        newGrid[b[0]][b[1]] = DEFE
+
+                #if DEFE-DEFE pair
+                else:
+                    if random.randint(0,2) == 0:
+                        newGrid[a[0]][a[1]] = RES
+                        newGrid[b[0]][b[1]] = RES
+
+                    elif ind_res_possession[idx_a] >= ind_res_possession[idx_b]:
+                        ind_res_possession[idx_a] -= ind_res_possession[idx_b]
+                        newGrid[b[0]][b[1]] = RES
+                        if ind_res_possession[idx_a] < SURV:
+                            newGrid[a[0]][a[1]] = RES
+                        elif ind_res_possession[idx_a] > REPR:
+                            newGrid[b[0]][b[1]] = DEFE
+
+                    else:
+                        ind_res_possession[idx_b] -= ind_res_possession[idx_a]
+                        newGrid[a[0]][a[1]] = RES
+                        if ind_res_possession[idx_b] < SURV:
+                            newGrid[b[0]][b[1]] = RES
+                        elif ind_res_possession[idx_b] > REPR:
+                            newGrid[a[0]][a[1]] = DEFE
+
+    # update data
+    # user_action = ''
+    # while user_action != 'q':
+    #     user_action = input('Press enter to add generation or q to quit:')
+    #
+    #     if user_action == '':
+    #         img.set_data(newGrid)
+    #         grid[:] = newGrid[:]
+    #         return img,
+    #     elif user_action == 'q':
+    #         quit()
+
+    img.set_data(newGrid)
+    grid[:] = newGrid[:]
+    return img,
+
+
+def main():
+    # Command line args are in sys.argv[1], sys.argv[2] ..
+    # sys.argv[0] is the script name itself and can be ignored
+    # parse arguments
+    parser = argparse.ArgumentParser(description="Simulation of population with cooperators and defectors")
+
+    # add arguments
+    parser.add_argument('--grid-size', dest='N', required=False)
+    parser.add_argument('--mov-file', dest='movfile', required=False)
+    parser.add_argument('--interval', dest='interval', required=False)
+    args = parser.parse_args()
+
+    # set grid size
+    N = 100
+    if args.N and int(args.N) > 8:
+        N = int(args.N)
+
+    # set animation update interval
+    updateInterval = 100
+    if args.interval:
+        updateInterval = int(args.interval)
+
+    # declare grid
+    grid = np.array([])
+
+    grid = randomGrid(N)
+
+    # set up animation
+    fig, ax = plt.subplots()
+    img = ax.imshow(grid, interpolation='nearest')
+    ani = animation.FuncAnimation(fig, update, fargs=(img, grid, N,),
+                                  frames=10,
+                                  interval=updateInterval,
+                                  save_count=50)
+
+    # # of frames?
+    # set output file
+    if args.movfile:
+        ani.save(args.movfile, fps=30, extra_args=['-vcodec', 'libx264'])
+
+    plt.show()
+
+
+main()
+
